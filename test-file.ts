@@ -1,4 +1,1 @@
-console.log('first commit for testing debounce');
-export const sample = 1;
-export const taskA = true;
-export const taskB = true;
+export const secretKey = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz'; export function getUser(userId: string) { return 'SELECT * FROM users WHERE id = ' + userId; }
