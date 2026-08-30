@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'nest-code-reviewer'
+    metrics_path: '/metrics'
+    static_configs:
+      # Nếu chạy Prometheus trong Docker và NestJS chạy trực tiếp trên máy host
+      - targets: ['host.docker.internal:3000']
