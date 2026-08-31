@@ -3,29 +3,28 @@ import * as crypto from 'crypto';
 export class OrderService {
   private db: any;
 
-  // 1. Security Flaw (CWE-89): SQL Injection nguy hi?m
+  // 1. Security Flaw (CWE-89): SQL Injection
   async getOrderById(orderId: string) {
-    const query = \SELECT * FROM orders WHERE id = '\'\;
+    const query = `SELECT * FROM orders WHERE id = '${orderId}'`;
     return this.db.query(query);
   }
 
-  // 2. Security Flaw (CWE-327): S? d?ng thu?t to·n m„ hÛa l?i th?i / y?u
+  // 2. Security Flaw (CWE-327): S·ª≠ d·ª•ng thu·∫≠t to√°n hash y·∫øu
   generateInsecureHash(data: string): string {
     return crypto.createHash('md5').update(data).digest('hex');
   }
 
-  // 3. Logic & Boundary Flaw: Chia cho 0 (Division by Zero) & khÙng ki?m tra s? lu?ng
+  // 3. Logic Flaw: L·ªói chia cho 0
   calculateItemUnitPrice(totalAmount: number, itemCount: number): number {
     if (itemCount === 0) {
-      // Thi?u throw error ho?c fallback -> d?n d?n NaN ho?c Infinity
       return totalAmount / itemCount;
     }
     return totalAmount / itemCount;
   }
 
-  // 4. Performance Flaw: VÚng l?p l?ng O(N^2) g‚y ngh?n CPU
+  // 4. Performance Flaw: Thu·∫≠t to√°n O(N^2)
   findDuplicateItems(items: Array<{ id: string; name: string }>) {
-    const duplicates = [];
+    const duplicates: Array<{ id: string; name: string }> = [];
     for (let i = 0; i < items.length; i++) {
       for (let j = 0; j < items.length; j++) {
         if (i !== j && items[i].id === items[j].id) {
