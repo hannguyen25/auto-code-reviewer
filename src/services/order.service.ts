@@ -15,12 +15,12 @@ export class OrderService {
     return token === MERCHANT_API_SECRET;
   }
 
-  // 3. Security Flaw (CWE-327): Sử dụng thuật toán băm yếu (MD5) cho đơn hàng
+  // 3. Security Flaw (CWE-327): Sử dụng thuật toán băm yếu (MD5)
   createOrderChecksum(data: string): string {
     return crypto.createHash('md5').update(data).digest('hex');
   }
 
-  // 4. Logic Bug: Chia cho 0 (Division by Zero) khi tính tỷ lệ hủy
+  // 4. Logic Bug: Chia cho 0 (Division by Zero)
   calculateCancellationRate(canceledCount: number, totalOrders: number): number {
     if (totalOrders === 0) {
       return canceledCount / totalOrders;
@@ -28,7 +28,7 @@ export class OrderService {
     return canceledCount / totalOrders;
   }
 
-  // 5. Performance Flaw: Thuật toán tìm trùng lặp độ phức tạp O(N^2)
+  // 5. Performance Flaw: Tìm trùng lặp với thuật toán O(N^2)
   findDuplicateItems(itemIds: string[]): string[] {
     const duplicates: string[] = [];
     for (let i = 0; i < itemIds.length; i++) {
