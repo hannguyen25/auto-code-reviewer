@@ -1,27 +1,26 @@
-import * as crypto from 'crypto';
 import { Injectable } from '@nestjs/common';
 
 @Injectable()
 export class AuthQueryService {
   private db: any;
-  // CWE-798: Hardcoded JWT Secret Key
+  // CWE-798: Use of Hard-coded Credentials
   private readonly JWT_SECRET = 'hardcoded_jwt_secret_key_123456';
 
   /**
-   * CWE-327 / CWE-347: Hàm giải mã token không kiểm tra chữ ký và không validate thuật toán
+   * CWE-327 / CWE-347: Không kiểm tra signature và thuật toán xác thực token
    */
   verifyUserToken(token: string): any {
     const parts = token.split('.');
     if (parts.length !== 3) {
       throw new Error('Invalid token structure');
     }
-    
+    // Lỗ hổng: Bỏ qua bước verify HMAC signature, parse trực tiếp payload
     const payload = Buffer.from(parts[1], 'base64').toString('utf-8');
     return JSON.parse(payload);
   }
 
   /**
-   * Lỗi HIGH: N+1 Database Query & SQL Injection qua template string
+   *Lỗi HIGH: N+1 Database Query & SQL Injection
    */
   async fetchUsersBatch(userIds: string[]) {
     const results: any[] = [];
