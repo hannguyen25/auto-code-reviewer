@@ -1,9 +1,6 @@
 import { ParsedDiffContext } from '../schemas/review-state.schema';
 
 export class PromptSanitizer {
-  /**
-   * Escape các thẻ XML đóng giả mạo trong diff để chống phá vỡ context
-   */
   static escapeXmlTags(content: string): string {
     if (!content) return '';
     return content
@@ -11,9 +8,6 @@ export class PromptSanitizer {
       .replace(/<untrusted_user_code>/gi, '&lt;untrusted_user_code&gt;');
   }
 
-  /**
-   * Đóng gói toàn bộ file diff vào block XML có chỉ dẫn an ninh
-   */
   static wrapDiffContext(files: ParsedDiffContext[]): string {
     if (!files || files.length === 0) {
       return '<untrusted_user_code>\n[Empty Diff]\n</untrusted_user_code>';
@@ -21,9 +15,10 @@ export class PromptSanitizer {
 
     const formattedFiles = files
       .map((file, index) => {
+        const filePath = file.filePath || (file as any).path || (file as any).filename || 'unknown';
         const safeDiff = this.escapeXmlTags(file.rawDiff || '');
         return `
-<file index="${index + 1}" path="${file.filePath}">
+<file index="${index + 1}" path="${filePath}">
 ${safeDiff}
 </file>`.trim();
       })

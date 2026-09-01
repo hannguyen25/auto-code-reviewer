@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { ConfigService } from '@nestjs/config';
+import { CallbackHandler } from 'langfuse-langchain';
 
 import { PRJobData } from '../webhook/webhook.service';
 import { DiffParserService } from '../diff-parser/diff-parser.service';
@@ -40,18 +41,15 @@ export class OrchestratorProcessor extends WorkerHost {
     const { prNumber, repoFullName } = job.data;
     this.logger.log(`⚡ [Job ${job.id}] Nhận xử lý PR #${prNumber} (${repoFullName})`);
 
-    // 1. Metric: Ghi nhận Queue Latency trong BullMQ
     const queueWaitTimeSeconds = (Date.now() - job.timestamp) / 1000;
     this.metricsService.recordQueueLatency?.(
       'pr-review-queue',
       queueWaitTimeSeconds,
     );
 
-    // 2. Metric: Bắt đầu đo thời gian chạy toàn bộ Agent Workflow
     const stopWorkflowTimer =
       this.metricsService.startAgentTimer?.('orchestrator_full_workflow');
 
-    // Thiết lập cơ chế Abort / Cancel qua Redis (FR-1.3)
     const abortController = new AbortController();
     const abortKey = `abort_job:${job.id}`;
 
@@ -67,13 +65,11 @@ export class OrchestratorProcessor extends WorkerHost {
     }, 500);
 
     try {
-      // 3. Thực thi Pipeline bóc tách Diff, chạy Multi-Agent và Dispatch kết quả
       const finalState = await this.executePipeline(
         job.data,
         abortController.signal,
       );
 
-      // Ghi nhận Metric thành công cho Workflow & PR Status Counter
       if (stopWorkflowTimer) stopWorkflowTimer('SUCCESS');
 
       const isClean =
@@ -112,42 +108,49 @@ export class OrchestratorProcessor extends WorkerHost {
 
     const { prNumber, repoFullName, headSha, baseSha } = data;
 
-    // 1. AST Engine: Trích xuất Context & Line Mappings từ Git Diff (FR-2.2, FR-2.3)
-    const rawDiff =
-      data.rawDiff ||
-      `diff --git a/src/calculator.ts b/src/calculator.ts
-index 0000000..1111111 100644
---- a/src/calculator.ts
-+++ b/src/calculator.ts
-@@ -1,4 +1,7 @@
- export class Calculator {
-+  multiply(a: number, b: number): number {
-+    return a * b;
-+  }
- }`;
+    // 1. Trích xuất danh sách file từ Webhook Data
+    let incomingFiles: Array<{ filePath: string; rawDiff: string }> = [];
 
-    this.logger.log(`🔍 [AST Engine] Bóc tách Diff & Scope cho PR #${prNumber}...`);
-    const { changedLines } = this.diffParserService.computeLineMappings(rawDiff);
-    const { scopes, imports } =
-      this.diffParserService.extractScopesAndImports(rawDiff);
+    if ((data as any).files && Array.isArray((data as any).files) && (data as any).files.length > 0) {
+      incomingFiles = (data as any).files.map((f: any) => ({
+        filePath: f.filename || f.path || f.filePath,
+        rawDiff: f.patch || f.rawDiff || '',
+      }));
+    } else {
+      incomingFiles = [
+        {
+          filePath: (data as any).filePath || 'src/services/order.service.ts',
+          rawDiff: data.rawDiff || '',
+        },
+      ];
+    }
+
+    const filteredFiles = this.diffParserService.filterPrFiles(incomingFiles);
+    this.logger.log(`🔍 [AST Engine] Bóc tách Diff & Scope cho PR #${prNumber} (${filteredFiles.length} files)...`);
+
+    // 2. Phân tích cú pháp AST & Line Mappings
+    const parsedFiles = filteredFiles.map((file) => {
+      const { changedLines } = this.diffParserService.computeLineMappings(file.rawDiff);
+      const { scopes, imports } = this.diffParserService.extractScopesAndImports(file.rawDiff);
+
+      return {
+        filePath: file.filePath,
+        rawDiff: file.rawDiff,
+        changedLines,
+        scopes,
+        imports,
+      };
+    });
 
     if (signal.aborted) throw new Error('AbortError');
 
-    // 2. Chuẩn bị Initial State cho StateGraph (FR-3.1)
+    // 3. Chuẩn bị Initial State cho StateGraph
     const initialState: AgentStateType = {
       prNumber,
       repoFullName,
       headSha: headSha || 'head-sha-placeholder',
       baseSha: baseSha || 'base-sha-placeholder',
-      parsedFiles: [
-        {
-          filePath: 'src/calculator.ts',
-          rawDiff,
-          changedLines,
-          scopes,
-          imports,
-        },
-      ],
+      parsedFiles,
       rawFindings: [],
       verifiedFindings: [],
       findings: [],
@@ -166,15 +169,41 @@ index 0000000..1111111 100644
       errors: [],
     };
 
-    // 3. Khởi chạy LangGraph Multi-Agent Workflow
+    // 4. Khởi tạo Langfuse Callback Handler
+    const langfusePublicKey = this.configService.get<string>('LANGFUSE_PUBLIC_KEY');
+    const langfuseSecretKey = this.configService.get<string>('LANGFUSE_SECRET_KEY');
+    const langfuseHost = this.configService.get<string>('LANGFUSE_HOST', 'https://cloud.langfuse.com');
+
+    let langfuseHandler: CallbackHandler | undefined;
+
+    if (langfusePublicKey && langfuseSecretKey) {
+      langfuseHandler = new CallbackHandler({
+        publicKey: langfusePublicKey,
+        secretKey: langfuseSecretKey,
+        baseUrl: langfuseHost,
+        metadata: {
+          prNumber,
+          repoFullName,
+          headSha,
+        },
+        tags: ['pr-review', 'langgraph-agents'],
+      });
+    }
+
+    // 5. Khởi chạy LangGraph Multi-Agent Workflow
     this.logger.log(`🤖 [LangGraph] Bắt đầu điều phối các Agent Nodes...`);
     const finalState = (await this.reviewWorkflow.graph.invoke(
       initialState,
+      langfuseHandler ? { callbacks: [langfuseHandler] } : undefined,
     )) as AgentStateType;
+
+    if (langfuseHandler) {
+      await langfuseHandler.flushAsync();
+    }
 
     if (signal.aborted) throw new Error('AbortError');
 
-    // 4. GitHub Dispatcher: Gửi findings đã được verify bởi Judge Node
+    // 6. GitHub Dispatcher: Gửi findings
     this.logger.log(
       `🚀 [GitHub Dispatcher] Đăng kết quả thẩm định lên GitHub PR #${prNumber}...`,
     );

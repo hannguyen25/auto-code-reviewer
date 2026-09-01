@@ -2,9 +2,9 @@ import { GoogleGenAI, Type } from '@google/genai';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-export const ai = new GoogleGenAI({
-  apiKey: process.env.GOOGLE_API_KEY || '',
-});
+const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+
+export const ai = new GoogleGenAI({ apiKey });
 
 /**
  * Định nghĩa JSON Schema theo chuẩn OpenAPI của Gemini Native SDK
@@ -50,7 +50,7 @@ export const findingJsonSchema = {
 };
 
 // Khoảng cách tối thiểu giữa 2 request liên tiếp (ms) tránh nghẽn RPM
-const MIN_REQUEST_INTERVAL_MS = 2500;
+const MIN_REQUEST_INTERVAL_MS = 2000;
 let lastRequestTime = 0;
 
 async function throttleRequest(): Promise<void> {
@@ -64,7 +64,49 @@ async function throttleRequest(): Promise<void> {
 }
 
 /**
- * Wrapper gọi Gemini API có Throttling, Structured JSON và Retry Exponential Backoff
+ * Bọc hàm gọi API với Timeout để tránh bị treo socket/network hang
+ */
+async function executeWithTimeout<T>(promiseFn: () => Promise<T>, timeoutMs = 30000): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Request timeout sau ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promiseFn(), timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+function isRetryableError(error: any): boolean {
+  const msg = (error?.message || '').toLowerCase();
+  return (
+    error?.status === 429 ||
+    msg.includes('429') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('too many requests') ||
+    msg.includes('fetch failed') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('timeout')
+  );
+}
+
+function extractRetryDelay(error: any, fallbackMs: number): number {
+  try {
+    const match = (error?.message || '').match(/retry in ([0-9.]+)s/i);
+    if (match && match[1]) {
+      return Math.ceil(parseFloat(match[1])) * 1000 + 1000;
+    }
+  } catch {
+    // Sử dụng fallback nếu không parse được
+  }
+  return fallbackMs;
+}
+
+/**
+ * Wrapper gọi Gemini API có Timeout, Throttling, Structured JSON và Auto-Retry
  */
 export async function generateStructuredContent<T = any>(
   modelName: string,
@@ -77,31 +119,31 @@ export async function generateStructuredContent<T = any>(
     try {
       await throttleRequest();
 
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema,
-          temperature: 0.1,
-        },
-      });
+      const response = await executeWithTimeout(async () => {
+        return await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema,
+            temperature: 0.1,
+          },
+        });
+      }, 30000);
 
-      const text = response.text?.trim() || '{}';
-      return JSON.parse(text) as T;
+      const rawText = response.text?.trim() || '{}';
+      
+      // Bóc tách JSON an toàn nếu dính markdown code block
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      const cleanJson = jsonMatch ? jsonMatch[0] : rawText;
+
+      return JSON.parse(cleanJson) as T;
     } catch (error: any) {
-      const isRateLimit =
-        error?.status === 429 ||
-        error?.message?.includes('429') ||
-        error?.message?.includes('RESOURCE_EXHAUSTED') ||
-        error?.message?.includes('Too Many Requests');
-
-      if (isRateLimit && attempt < maxRetries) {
-        // Backoff tăng dần: 6s, 12s, 18s
-        const backoffDelay = attempt * 6000;
+      if (isRetryableError(error) && attempt < maxRetries) {
+        const backoffDelay = extractRetryDelay(error, attempt * 5000);
         console.warn(
-          `[GeminiClient] ⚠️ Dính Quota/Rate Limit (429). Đang chờ ${backoffDelay / 1000}s trước khi thử lại (${attempt}/${maxRetries})...`,
+          `[GeminiClient] ⚠️ Sự cố kết nối/Quota (${error?.message || error}). Thử lại sau ${backoffDelay / 1000}s (${attempt}/${maxRetries})...`,
         );
         await new Promise((resolve) => setTimeout(resolve, backoffDelay));
         continue;
@@ -115,11 +157,11 @@ export async function generateStructuredContent<T = any>(
     }
   }
 
-  throw new Error('[GeminiClient] Đã vượt quá số lần retry tối đa.');
+  throw new Error('[GeminiClient] Đã vượt quá số lần retry tối đa cho structured content.');
 }
 
 /**
- * Wrapper sinh text/code tự do (dành cho Test Generator Agent)
+ * Wrapper sinh text/code tự do (dành cho Test Generator Agent) có Timeout & Auto-Retry
  */
 export async function generateRawContent(
   modelName: string,
@@ -131,36 +173,32 @@ export async function generateRawContent(
     try {
       await throttleRequest();
 
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          systemInstruction,
-          temperature: 0.2,
-        },
-      });
+      const response = await executeWithTimeout(async () => {
+        return await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            systemInstruction,
+            temperature: 0.2,
+          },
+        });
+      }, 30000);
 
       return response.text || '';
     } catch (error: any) {
-      const isRateLimit =
-        error?.status === 429 ||
-        error?.message?.includes('429') ||
-        error?.message?.includes('RESOURCE_EXHAUSTED') ||
-        error?.message?.includes('Too Many Requests');
-
-      if (isRateLimit && attempt < maxRetries) {
-        // Chờ tối thiểu 20s, 40s cho mỗi lần thử lại
-        const backoffDelay = attempt * 20000;
+      if (isRetryableError(error) && attempt < maxRetries) {
+        const backoffDelay = extractRetryDelay(error, attempt * 5000);
         console.warn(
-          `[GeminiClient] ⚠️ Dính Quota (429). Đang chờ ${backoffDelay / 1000}s trước khi thử lại (${attempt}/${maxRetries})...`,
+          `[GeminiClient] ⚠️ Sự cố kết nối/Quota (${error?.message || error}). Thử lại sau ${backoffDelay / 1000}s (${attempt}/${maxRetries})...`,
         );
         await new Promise((resolve) => setTimeout(resolve, backoffDelay));
         continue;
       }
+
       console.error(`[GeminiClient] ❌ Lỗi thực thi generateRawContent:`, error?.message || error);
       throw error;
     }
   }
 
-  throw new Error('[GeminiClient] Đã vượt quá số lần retry tối đa.');
+  throw new Error('[GeminiClient] Đã vượt quá số lần retry tối đa cho raw content.');
 }

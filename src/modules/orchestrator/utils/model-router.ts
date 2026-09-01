@@ -1,4 +1,6 @@
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 
@@ -12,21 +14,5 @@ export class ModelRouter {
 
   static getQualityModelName(): string {
     return this.QUALITY_MODEL_NAME;
-  }
-
-  static getSecurityModel() {
-    return new ChatGoogleGenerativeAI({
-      model: this.SECURITY_MODEL_NAME,
-      apiKey: apiKey,
-      temperature: 0.1,
-    });
-  }
-
-  static getQualityModel() {
-    return new ChatGoogleGenerativeAI({
-      model: this.QUALITY_MODEL_NAME,
-      apiKey: apiKey,
-      temperature: 0.1,
-    });
   }
 }

@@ -23,7 +23,7 @@ export class DiffParserService implements OnModuleInit {
   async onModuleInit() {
     try {
       const TreeSitter = Parser.default || Parser;
-      if (typeof TreeSitter.init === 'function') {
+      if (typeof TreeSitter?.init === 'function') {
         await TreeSitter.init();
         this.parser = new TreeSitter();
         this.logger.log('🌲 Tree-sitter Parser initialized successfully');
@@ -38,16 +38,21 @@ export class DiffParserService implements OnModuleInit {
    */
   public shouldIncludeFile(filename: string): boolean {
     if (!filename) return false;
-    const isExcluded = this.excludedPatterns.some((pattern) => pattern.test(filename));
-    return !isExcluded;
-  }
-
-  public filterPrFiles<T extends { filename: string }>(files: T[]): T[] {
-    return files.filter((file) => this.shouldIncludeFile(file.filename));
+    return !this.excludedPatterns.some((pattern) => pattern.test(filename));
   }
 
   /**
-   * 2. MODULE TÍNH TOÁN LINE MAPPING (FR-2.3 - Chuyển đổi newLineNumber -> diffPosition)
+   * Hỗ trợ lọc danh sách file bất kể object dùng `filename`, `path` hay `filePath`
+   */
+  public filterPrFiles<T extends { filename?: string; path?: string; filePath?: string }>(files: T[]): T[] {
+    return files.filter((file) => {
+      const targetPath = file.filename || file.path || file.filePath || '';
+      return this.shouldIncludeFile(targetPath);
+    });
+  }
+
+  /**
+   * 2. MODULE TÍNH TOÁN LINE MAPPING (FR-2.3)
    */
   public computeLineMappings(rawFileDiff: string): {
     lineMappings: Map<number, LineMapping>;
@@ -55,6 +60,8 @@ export class DiffParserService implements OnModuleInit {
   } {
     const lineMappings = new Map<number, LineMapping>();
     const changedLines: number[] = [];
+
+    if (!rawFileDiff) return { lineMappings, changedLines };
 
     const lines = rawFileDiff.split('\n');
     let diffPosition = 0;
@@ -76,25 +83,23 @@ export class DiffParserService implements OnModuleInit {
       diffPosition++;
 
       if (line.startsWith('+')) {
-        const mapping: LineMapping = {
+        lineMappings.set(currentNewLine, {
           newLineNumber: currentNewLine,
           diffPosition,
           content: line.substring(1),
           type: 'add',
-        };
-        lineMappings.set(currentNewLine, mapping);
+        });
         changedLines.push(currentNewLine);
         currentNewLine++;
       } else if (line.startsWith('-')) {
-        // Dòng xóa không tăng chỉ số dòng file mới
+        // Line bị xóa bỏ qua
       } else {
-        const mapping: LineMapping = {
+        lineMappings.set(currentNewLine, {
           newLineNumber: currentNewLine,
           diffPosition,
           content: line.startsWith(' ') ? line.substring(1) : line,
           type: 'normal',
-        };
-        lineMappings.set(currentNewLine, mapping);
+        });
         currentNewLine++;
       }
     }
@@ -103,7 +108,7 @@ export class DiffParserService implements OnModuleInit {
   }
 
   /**
-   * 3. BÓC TÁCH ENCLOSING SCOPES & IMPORTS (FR-2.2)
+   * 3. BÓC TÁCH SCOPES & IMPORTS (FR-2.2)
    */
   public extractScopesAndImports(fileContent: string): {
     scopes: ParsedScopeContext[];
@@ -159,16 +164,18 @@ export class DiffParserService implements OnModuleInit {
     return { scopes, imports };
   }
 
-  /**
-   * Tính toán dòng kết thúc của scope bằng cách đếm cặp ngoặc nhọn
-   */
   private findScopeEndLine(lines: string[], startIndex: number): number {
     let openBraces = 0;
     let foundStart = false;
 
     for (let i = startIndex; i < lines.length; i++) {
-      const line = lines[i];
-      for (const char of line) {
+      // Loại bỏ chuỗi template string hoặc string literal để tránh đếm nhầm ${...}
+      const sanitizedLine = lines[i]
+        .replace(/`[\s\S]*?`/g, '""')
+        .replace(/'[^']*'/g, "''")
+        .replace(/"[^"]*"/g, '""');
+
+      for (const char of sanitizedLine) {
         if (char === '{') {
           openBraces++;
           foundStart = true;
@@ -183,9 +190,6 @@ export class DiffParserService implements OnModuleInit {
     return lines.length;
   }
 
-  /**
-   * Tìm Enclosing Scope hẹp nhất cho một dòng
-   */
   public findEnclosingScope(lineNumber: number, scopes: ParsedScopeContext[]): ParsedScopeContext | null {
     const matches = scopes.filter((s) => lineNumber >= s.startLine && lineNumber <= s.endLine);
     if (matches.length === 0) return null;

@@ -7,19 +7,12 @@ import { ConfigService } from '@nestjs/config';
 export interface PRJobData {
   prNumber: number;
   repoFullName: string;
-  installationId: number;
+  installationId?: number;
   headSha: string;
   baseSha: string;
-  diffUrl: string;
-  action: string;
-}
-
-export interface PRJobData {
-  prNumber: number;
-  repoFullName: string;
-  headSha: string;
-  baseSha: string;
-  rawDiff?: string; 
+  diffUrl?: string;
+  action?: string;
+  rawDiff?: string;
 }
 
 @Injectable()
@@ -40,13 +33,18 @@ export class WebhookService {
 
   async handlePullRequestEvent(payload: any) {
     const action = payload.action;
-    const prNumber = payload.pull_request.number;
-    const repoFullName = payload.repository.full_name;
-    const repoId = payload.repository.id;
-    const headSha = payload.pull_request.head.sha;
-    const baseSha = payload.pull_request.base.sha;
-    const diffUrl = payload.pull_request.diff_url;
+    const prNumber = payload.pull_request?.number;
+    const repoFullName = payload.repository?.full_name;
+    const repoId = payload.repository?.id;
+    const headSha = payload.pull_request?.head?.sha;
+    const baseSha = payload.pull_request?.base?.sha;
+    const diffUrl = payload.pull_request?.diff_url;
     const installationId = payload.installation?.id;
+
+    if (!prNumber || !repoFullName) {
+      this.logger.warn('⚠️ Webhook payload không chứa đủ thông tin PR.');
+      return;
+    }
 
     // Khóa định danh PR duy nhất trên Redis
     const prKey = `active_pr:${repoFullName}#${prNumber}`;
@@ -56,10 +54,8 @@ export class WebhookService {
       const activeJobId = await this.redisClient.get(prKey);
       if (activeJobId) {
         this.logger.warn(`🔄 New commit pushed on PR #${prNumber}. Cancelling old Job ID: ${activeJobId}`);
-        // 1. Gắn cờ huỷ trên Redis để Worker phát hiện và kích hoạt AbortController
         await this.redisClient.set(`abort_job:${activeJobId}`, '1', 'EX', 300);
 
-        // 2. Nếu job còn đang nằm chờ trong hàng đợi (delayed/waiting), xóa trực tiếp
         const oldJob = await this.reviewQueue.getJob(activeJobId);
         if (oldJob) {
           const state = await oldJob.getState();
@@ -70,6 +66,30 @@ export class WebhookService {
       }
     }
 
+    // Tải trực tiếp diff từ GitHub Pull Request API
+    let rawDiff = '';
+    try {
+      const githubToken = this.configService.get<string>('GITHUB_TOKEN') || process.env.GITHUB_TOKEN;
+      const apiUrl = `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}`;
+      
+      const response = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': 'NestJS-AI-Code-Reviewer',
+          'Accept': 'application/vnd.github.v3.diff',
+          ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
+        },
+      });
+
+      if (response.ok) {
+        rawDiff = await response.text();
+        this.logger.log(`📄 Đã tải Git Diff thành công (${rawDiff.length} ký tự).`);
+      } else {
+        this.logger.error(`❌ Lỗi tải diff từ GitHub: ${response.status} ${response.statusText}`);
+      }
+    } catch (err: any) {
+      this.logger.error(`❌ Không thể tải rawDiff: ${err.message}`);
+    }
+
     const jobData: PRJobData = {
       prNumber,
       repoFullName,
@@ -78,25 +98,23 @@ export class WebhookService {
       baseSha,
       diffUrl,
       action,
+      rawDiff,
     };
 
-    // Định danh duy nhất theo chuẩn Deduplication: pr-{repo_id}-{pr_number}-{head_sha}
     const uniqueJobId = `pr-${repoId}-${prNumber}-${headSha}`;
 
-    // Đẩy Job mới vào Queue với cấu hình Retry & DLQ
     const newJob = await this.reviewQueue.add('review-pr', jobData, {
       jobId: uniqueJobId,
       delay: 2000,
-      attempts: 3,                  // Thử lại tối đa 3 lần nếu có lỗi
+      attempts: 3,
       backoff: {
-        type: 'exponential',        // Backoff lũy tiến: 1s, 2s, 4s...
+        type: 'exponential',
         delay: 1000,
       },
       removeOnComplete: true,
-      removeOnFail: false,          // Lưu lại job trong danh sách failed (DLQ)
+      removeOnFail: false,
     });
 
-    // Cập nhật Job ID mới nhất cho PR này
     if (newJob.id) {
       await this.redisClient.set(prKey, newJob.id, 'EX', 86400);
       this.logger.log(`📥 Enqueued PR #${prNumber} (${repoFullName}) - Job ID: ${newJob.id}`);
