@@ -13,15 +13,13 @@
 
 ## 📑 Mục lục
 - [Kiến trúc hệ thống (Architecture)](#-kiến-trúc-hệ-thống)
-- [Quy trình hoạt động (Workflow)](#-quy-trình-hoạt-động)
 - [Tính năng chính (Key Features)](#-tính-năng-chính)
-- [Demo trực quan](#-demo-trực-quan)
-- [Đánh giá hiệu năng & Chi phí](#-đánh-giá-hiệu-năng--chi-phí)
+- [LLM Observability & Metrics (Langfuse)](#-llm-observability--metrics-langfuse)
+- [Demo Video](#-demo-trực-quan)
 - [Cài đặt & Triển khai (Getting Started)](#-cài-đặt--triển-khai)
 - [Cấu hình biến môi trường (.env)](#-cấu-hình-biến-môi-trường)
 - [Chạy kiểm thử (Testing)](#-chạy-kiểm-thử)
 - [Giấy phép (License)](#-giấy-phép)
-
 ---
 
 ##  Kiến trúc hệ thống
@@ -110,6 +108,12 @@ Toàn bộ quy trình điều phối Multi-Agent được giám sát thời gian
 | LangGraph Multi-Agent Execution Trace | Latency Percentiles & Agent Breakdown |
 | :---: | :---: |
 | ![Langfuse Trace](docs/images/langfuse-trace.png) | ![Langfuse Metrics](docs/images/langfuse-metrics.png) |
+
+---
+
+## 🎬 Demo Video
+
+![AI Code Reviewer Pipeline Demo](docs/images/demo.gif)
 
 ---
 
